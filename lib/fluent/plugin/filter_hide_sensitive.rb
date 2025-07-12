@@ -20,9 +20,9 @@ module Fluent::Plugin
       return record unless target.is_a?(Hash)
 
       hidden = {}
-      recursively_extract!(target, hidden)
+      recursively_extract!(target, hidden, [])
 
-      record[@output_key] = hidden unless hidden.empty?
+      record[@output_key] = hidden unless hidden_empty?(hidden)
       record
     end
 
@@ -34,21 +34,40 @@ module Fluent::Plugin
       end
     end
 
-    def recursively_extract!(obj, hidden)
+    def recursively_extract!(obj, hidden, path)
       return unless obj.is_a?(Hash)
 
       obj.keys.each do |key|
         val = obj[key]
-        if sensitive_key?(key)        
-          log.debug "Before delete: #{hidden.inspect}"  
-          hidden[key] = val
+        full_path = path + [key]
+
+        if sensitive_key?(key)
+          assign_nested(hidden, full_path, val)
           obj.delete(key)
-          log.debug "After delete: #{hidden.inspect}"
         elsif val.is_a?(Hash)
-          recursively_extract!(val, hidden)
+          recursively_extract!(val, hidden, full_path)
         elsif val.is_a?(Array)
-          val.each { |v| recursively_extract!(v, hidden) if v.is_a?(Hash) }
+          val.each { |v| recursively_extract!(v, hidden, full_path) if v.is_a?(Hash) }
         end
+      end
+    end
+
+    def assign_nested(hash, path, value)
+      *initial_keys, last_key = path
+      current = hash
+      initial_keys.each do |k|
+        current[k] ||= {}
+        current = current[k]
+      end
+      current[last_key] = value
+    end
+
+    def hidden_empty?(obj)
+      case obj
+      when Hash
+        obj.all? { |_, v| hidden_empty?(v) }
+      else
+        false
       end
     end
 
