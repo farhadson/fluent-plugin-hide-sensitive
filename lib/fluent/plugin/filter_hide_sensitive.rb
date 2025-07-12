@@ -39,8 +39,11 @@ module Fluent::Plugin
 
       obj.keys.each do |key|
         val = obj[key]
-        if sensitive_key?(key)
-          hidden[key] = obj.delete(key)
+        if sensitive_key?(key)        
+          log.debug "Before delete: #{hidden.inspect}"  
+          hidden[key] = val
+          obj.delete(key)
+          log.debug "After delete: #{hidden.inspect}"
         elsif val.is_a?(Hash)
           recursively_extract!(val, hidden)
         elsif val.is_a?(Array)
