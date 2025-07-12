@@ -1,6 +1,9 @@
 Gem::Specification.new do |spec|
   spec.name          = "fluent-plugin-hide-sensitive"
-  spec.version       = "Fluent::Plugin::HideSensitive::VERSION"
+
+  require_relative "lib/fluent/plugin/version.rb"
+  spec.version       = Fluent::Plugin::HideSensitive::VERSION
+
   spec.authors       = ["Farhad Kazemi"]
   spec.email         = ["farhad.kazemi89@gmail.com"]
 
