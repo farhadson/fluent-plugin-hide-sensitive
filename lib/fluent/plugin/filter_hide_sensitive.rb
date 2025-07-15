@@ -55,6 +55,10 @@ module Fluent::Plugin
         full_path = path + [key]  # ✅ Correct way to extend path for this key
 
         if sensitive_key?(key)
+          # Only remove and assign if value is NOT a Hash or Array of Hashes
+          next if val.is_a?(Hash)
+          next if val.is_a?(Array) && val.any? { |e| e.is_a?(Hash) }
+
           assign_nested(hidden, full_path, val)  # Store full path into hidden
           obj.delete(key)                        # Remove from original
         elsif val.is_a?(Hash)
