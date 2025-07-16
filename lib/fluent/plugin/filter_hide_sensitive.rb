@@ -5,92 +5,111 @@ module Fluent::Plugin
   class HideSensitiveFilter < Filter
     Fluent::Plugin.register_filter('hide_sensitive', self)
 
-    config_param :sensitive_keys, :array, default: []
-    config_param :search_path, :string, default: ''
-    config_param :output_key, :string, default: 'hidden_keys'
+    # === Plugin Configuration ===
+    config_param :sensitive_keys, :array, default: []                # Keys to search for, e.g., ["token", "password"]
+    config_param :search_path, :string, default: ''                  # Dot-separated path to nested object, e.g., "log.data.headers"
+    config_param :output_key, :string, default: 'hidden_keys'        # Where to store extracted keys
+    config_param :debug_mode, :bool, default: false                  # Whether to print debug info
 
     def configure(conf)
       super
-      # Split dotted path like "log.data.headers" into ["log", "data", "headers"]
+      raise Fluent::ConfigError, "search_path must not be empty" if search_path.empty?
+
+      # Split "log.data.headers" into ["log", "data", "headers"]
       @path_parts = @search_path.split('.')
 
-      # Compile sensitive key matchers like /token/i, /pass/i
+      # Convert sensitive_keys into case-insensitive regex patterns
       @sensitive_patterns = @sensitive_keys.map do |k|
         Regexp.new(Regexp.escape(k), Regexp::IGNORECASE)
       end
     end
 
     def filter(tag, time, record)
-      # Navigate to the target nested object
+      # Navigate to the specified nested object
       target = dig(record, @path_parts)
 
-      # If that path doesn't lead to a hash, skip
+      # If the path doesn't point to a Hash, skip processing
       return record unless target.is_a?(Hash)
 
       hidden = {}
 
-      # Recursively walk through nested hashes
-      recursively_extract!(target, hidden, [])
+      # Extract sensitive keys into `hidden`, and track if any were removed
+      modified = recursively_extract!(target, hidden, [])
 
-      # If we found any hidden keys, store them
-      record[@output_key] = hidden unless hidden_empty?(hidden)
+      # Store hidden keys only if something was removed
+      if modified
+        log.debug "[hide_sensitive] tag=#{tag}, hidden_keys=#{hidden}" if @debug_mode
+        record[@output_key] = hidden
+      end
+
       record
     end
 
     private
 
-    # Follow the path like record["log"]["data"]["headers"]
+    # Traverse a hash via a dot path like ["log", "data", "headers"]
     def dig(hash, path)
       path.reduce(hash) do |h, k|
         h.is_a?(Hash) ? h[k] : nil
       end
     end
 
-    # Walk deeply through nested structures
+    # Walk deeply through nested structure and filter sensitive keys
     def recursively_extract!(obj, hidden, path)
-      return unless obj.is_a?(Hash)
+      return false unless obj.is_a?(Hash)
+      modified = false
 
-      obj.keys.each do |key|
-        val = obj[key]
-        full_path = path + [key]  # ✅ Correct way to extend path for this key
+      obj.each_pair do |key, val|
+        full_path = path + [key]  # Extend current path
 
-        if sensitive_key?(key)
-          # Only remove and assign if value is NOT a Hash or Array of Hashes
-          next if val.is_a?(Hash)
-          next if val.is_a?(Array) && val.any? { |e| e.is_a?(Hash) }
-
-          assign_nested(hidden, full_path, val)  # Store full path into hidden
-          obj.delete(key)                        # Remove from original
-        elsif val.is_a?(Hash)
-          recursively_extract!(val, hidden, full_path)
+        if val.is_a?(Hash)
+          # Recurse into nested hashes
+          modified |= recursively_extract!(val, hidden, full_path)
         elsif val.is_a?(Array)
-          val.each { |v| recursively_extract!(v, hidden, full_path) if v.is_a?(Hash) }
+          if array_contains_hash?(val)
+            # Recurse into array of hashes
+            val.each do |v|
+              modified |= recursively_extract!(v, hidden, full_path) if v.is_a?(Hash)
+            end
+          else
+            # Handle non-nested array values (e.g., ["token123"])
+            modified |= remove_and_assign_if_sensitive(obj, hidden, key, val, full_path)
+          end
+        else
+          # Handle leaf values directly
+          modified |= remove_and_assign_if_sensitive(obj, hidden, key, val, full_path)
         end
       end
+
+      modified
     end
 
-    # Build nested hash structure in hidden, based on path
+    # Check and remove sensitive key if matched; assign to hidden
+    def remove_and_assign_if_sensitive(obj, hidden, key, val, path)
+      return false unless sensitive_key?(key)
+
+      assign_nested(hidden, path, val)  # Store full path into hidden
+      obj.delete(key)                   # Remove from original
+      true
+    end
+
+    # Returns true if the array contains at least one Hash element
+    def array_contains_hash?(arr)
+      arr.any? { |e| e.is_a?(Hash) }
+    end
+
+    # Create a nested structure like: { "log" => { "data" => { "token" => "123" }}}
     def assign_nested(hash, path, value)
       *initial_keys, last_key = path
       current = hash
       initial_keys.each do |k|
-        current[k] ||= {}       # Create nested hashes if missing
+        current[k] ||= {}       # Create nested hashes if they don't exist
         current = current[k]
       end
       current[last_key] = value
     end
 
-    # Check if all branches are empty (used to decide if we skip storing hidden_keys)
-    def hidden_empty?(obj)
-      case obj
-      when Hash
-        obj.all? { |_, v| hidden_empty?(v) }
-      else
-        false
-      end
-    end
-
-    # Case-insensitive matching against key
+    # Match key against the list of case-insensitive patterns
     def sensitive_key?(key)
       @sensitive_patterns.any? { |pattern| key.to_s =~ pattern }
     end
